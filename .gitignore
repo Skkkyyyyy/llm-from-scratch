@@ -1,3 +1,5 @@
 outputs/checkpoints/
 *.pth
 *.pt
+__pycache__/
+*.pyc 

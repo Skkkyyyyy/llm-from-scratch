@@ -10,6 +10,7 @@ from utils.GenerateText import generate_text_simple
 from data.dataloader import create_dataloader_v1
 from utils.weights import load_weights_into_gpt
 from transformers import GPT2LMHeadModel
+from model.lora import replace_linear_with_lora
 
 ##################################
 # Conversion between texts and ids: Text-to-token-ids, Token-ids-to-text 
@@ -70,7 +71,10 @@ def generate_and_print_sample(model, tokenizer, device, start_context):
     with torch.no_grad():
         token_ids = generate_text_simple(
             model=model, idx=encoded,
-            max_new_tokens=50, context_size=context_size
+            max_new_tokens=100, context_size=context_size,
+            eos_id=50256,
+            top_k = 50, 
+            temperature=0.7 
         )
         decoded_text = token_ids_to_text(token_ids, tokenizer)
         print(decoded_text.replace("\n", " "))  # Compact print format
@@ -149,9 +153,21 @@ def main(gpt_config, settings):
     #initialize model
     model = GPTModel(gpt_config)
     load_weights_into_gpt(model, sd, gpt_config["n_layers"])
+    
+    for p in model.parameters():
+        p.requires_grad = False 
+
+    replace_linear_with_lora(model, rank=16, alpha=16)
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"trainable: {trainable:,} / {total:,}")
+
     model.to(device)
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=settings["learning_rate"], weight_decay=settings["weight_decay"]
+        (p for p in model.parameters() if p.requires_grad),
+        lr = settings["learning_rate"],
+        weight_decay = settings["weight_decay"]
     )
 
     #set up dataloaders 
@@ -161,8 +177,8 @@ def main(gpt_config, settings):
     train_loader = create_dataloader_v1(
         text_data[:split_idx],
         batch_size=settings["batch_size"],
-        max_length=gpt_config["context_length"],
-        stride=gpt_config["context_length"],
+        max_length=256,
+        stride=256,
         drop_last=True,
         shuffle=True,
         num_workers=0
@@ -171,8 +187,8 @@ def main(gpt_config, settings):
     val_loader = create_dataloader_v1(
         text_data[split_idx:],
         batch_size=settings["batch_size"],
-        max_length=gpt_config["context_length"],
-        stride=gpt_config["context_length"],
+        max_length=256,
+        stride=256,
         drop_last=False,
         shuffle=False,
         num_workers=0
@@ -205,7 +221,7 @@ if __name__ == "__main__":
 
     OTHER_SETTINGS = {
         "learning_rate": 5e-4,
-        "num_epochs": 10,
+        "num_epochs": 2,
         "batch_size": 2,
         "weight_decay": 0.1
     }
@@ -221,5 +237,6 @@ if __name__ == "__main__":
     #save and load model 
     torch.save(model.state_dict(), "outputs/checkpoints/model.pth")
     model = GPTModel(GPT_CONFIG_124M)
+    replace_linear_with_lora(model,rank=16,alpha=16)
     model.load_state_dict(torch.load("outputs/checkpoints/model.pth", weights_only=True))
     model.eval() 

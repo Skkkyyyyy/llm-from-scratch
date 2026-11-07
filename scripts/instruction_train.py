@@ -6,6 +6,7 @@ from model.GPTModel import GPTModel
 from utils.weights import load_weights_into_gpt
 from scripts.gpt_train import calc_loss_batch, calc_loss_loader, train_model
 from data.instruction_dataloader import InstructionDataset, collate_fn, format_input 
+from model.lora import replace_linear_with_lora 
 
 # main = 
 # setup: device, random seed
@@ -21,15 +22,25 @@ torch.manual_seed(123)
 cfg = {
     "vocab_size": 50257,
     "context_length": 1024,   # must match GPT-2's wpe
-    "emb_dim": 768,
-    "n_heads": 12,
-    "n_layers": 12,
+    "emb_dim": 1024,
+    "n_heads": 16,
+    "n_layers": 24,
     "drop_rate": 0.0,
     "qkv_bias": True,         # GPT-2 has Q/K/V biases
 }
 model = GPTModel(cfg)
-sd = GPT2LMHeadModel.from_pretrained("gpt2").state_dict()
+sd = GPT2LMHeadModel.from_pretrained("gpt2-medium").state_dict()
 load_weights_into_gpt(model, sd, cfg["n_layers"])
+
+for p in model.parameters():
+    p.requires_grad = False 
+replace_linear_with_lora(model, rank=64, alpha=16)
+
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+total = sum(p.numel() for p in model.parameters())
+print(f"trainable: {trainable:,} / {total:,}")
+
+device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 model.to(device)
 
 # ---------- data ----------
@@ -66,12 +77,18 @@ with torch.no_grad():
     print("train loss:", calc_loss_loader(train_loader, model, device, num_batches=5))
     print("val loss:  ", calc_loss_loader(val_loader, model, device, num_batches=5))
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.1)
+optimizer = torch.optim.AdamW(
+    (p for p in model.parameters() if p.requires_grad),
+    lr=5e-4,
+    weight_decay=0.1,
+)
 
 start_context = format_input(val_data[0]) + "\n\n### Response:\n"
 
 train_losses, val_losses, tokens_seen = train_model(
     model, train_loader, val_loader, optimizer, device,
-    num_epochs=2, eval_freq=5, eval_iter=5,
+    num_epochs=3, eval_freq=10, eval_iter=5,
     start_context=start_context, tokenizer=tokenizer,
 )
+
+torch.save(model.state_dict(), "outputs/checkpoints/instruction_lora.pth")

@@ -8,9 +8,9 @@ class LoRALayer(torch.nn.Module):
         self.B = torch.nn.Parameter(torch.zeros(rank, out_dim))
         self.A = torch.nn.Parameter(torch.empty(in_dim, rank))
         torch.nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))#fill A with random numbers in place
-        self.alpha = alpha 
+        self.scaling = alpha/rank
     def forward(self,x):
-        x = self.alpha * (x @ self.A @ self.B)
+        x = self.scaling * (x @ self.A @ self.B)
         return x
 
 # Wx + alpha/r * BAx 
